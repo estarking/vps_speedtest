@@ -51,6 +51,10 @@ chmod +x vps_speed.sh
 bash <(curl -Ls https://cs.kyxxx.bond/vps_speed.sh)
 ```
 
+```bash
+bash <(curl -Ls https://cs.kyxxx.bond/vps_speedmini.sh)
+```
+
 或者：
 
 ```bash
