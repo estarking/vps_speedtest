@@ -8,11 +8,7 @@
 
 # - Debian
 
-# - Ubuntu
-
 # - Alpine
-
-# Author: ChatGPT
 
 # ==========================================
 
