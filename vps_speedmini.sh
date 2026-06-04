@@ -42,16 +42,21 @@ echo "========================================="
 
 if command -v curl >/dev/null 2>&1; then
 
-    curl -L \
+    SPEED=$(curl -L \
         -o /dev/null \
-        https://speed.cloudflare.com/__down?bytes=50000000 \
-        -w "Download Speed: %{speed_download} bytes/sec\n" \
-        --silent
+        "https://speed.cloudflare.com/__down?bytes=50000000" \
+        -w "%{speed_download}" \
+        --silent)
+
+    MBPS=$(awk "BEGIN {printf \"%.2f\", $SPEED*8/1000000}")
+    MBS=$(awk "BEGIN {printf \"%.2f\", $SPEED/1000000}")
+
+    echo "Download: ${MBPS} Mbps (${MBS} MB/s)"
 
 elif command -v wget >/dev/null 2>&1; then
 
-    wget -O /dev/null \
-        https://speed.cloudflare.com/__down?bytes=50000000
+    echo "Using wget for download test..."
+    wget -O /dev/null "https://speed.cloudflare.com/__down?bytes=50000000"
 
 else
 
