@@ -133,6 +133,43 @@ base64_oneline(){
 	fi
 }
 
+stop_pid_file(){
+	pid_file="$1"
+	match_text="$2"
+	if [ ! -f "$pid_file" ]
+	then
+		return 0
+	fi
+	pid=$(cat "$pid_file" 2>/dev/null)
+	rm -f "$pid_file"
+	if ! printf '%s\n' "$pid" | grep -Eq '^[0-9]+$'
+	then
+		return 0
+	fi
+	if ps -p "$pid" -o args= 2>/dev/null | grep -Fq "$match_text"
+	then
+		kill "$pid" >/dev/null 2>&1 || true
+		sleep 1
+		kill -9 "$pid" >/dev/null 2>&1 || true
+	fi
+}
+
+stop_managed_services(){
+	if [ "$os_name" = "Alpine" ]
+	then
+		stop_pid_file /opt/argo/xray.pid "/opt/argo/xray"
+		stop_pid_file /opt/argo/cloudflared.pid "/opt/argo/cloudflared-linux"
+	else
+		timeout 10s systemctl stop cloudflared.service >/dev/null 2>&1 || true
+		timeout 10s systemctl stop xray.service >/dev/null 2>&1 || true
+	fi
+}
+
+stop_quick_processes(){
+	stop_pid_file .argo_quick_xray.pid "./xray/xray"
+	stop_pid_file .argo_quick_cloudflared.pid "./cloudflared-linux"
+}
+
 function quicktunnel(){
 rm -rf xray cloudflared-linux xray.zip
 download_components
@@ -222,7 +259,11 @@ cat>xray/config.json<<EOF
 EOF
 fi
 ./xray/xray run>/dev/null 2>&1 &
+xray_pid=$!
+printf '%s\n' "$xray_pid" > .argo_quick_xray.pid
 ./cloudflared-linux tunnel --url http://localhost:$port --no-autoupdate --edge-ip-version $ips --protocol http2 >argo.log 2>&1 &
+cloudflared_pid=$!
+printf '%s\n' "$cloudflared_pid" > .argo_quick_cloudflared.pid
 sleep 1
 n=0
 while true
@@ -234,16 +275,13 @@ argo=$(cat argo.log | grep trycloudflare.com | awk 'NR==2{print}' | awk -F// '{p
 if [ "$n" = "15" ]
 then
 	n=0
-	if [ "$os_name" = "Alpine" ]
-	then
-		kill -9 $(ps -ef | grep cloudflared-linux | grep -v grep | awk '{print $1}') >/dev/null 2>&1
-	else
-		kill -9 $(ps -ef | grep cloudflared-linux | grep -v grep | awk '{print $2}') >/dev/null 2>&1
-	fi
+	stop_pid_file .argo_quick_cloudflared.pid "./cloudflared-linux"
 	rm -rf argo.log
 	clear
 	echo "Argo URL timed out, retrying..."
 	./cloudflared-linux tunnel --url http://localhost:$port --no-autoupdate --edge-ip-version $ips --protocol http2 >argo.log 2>&1 &
+	cloudflared_pid=$!
+	printf '%s\n' "$cloudflared_pid" > .argo_quick_cloudflared.pid
 	sleep 1
 elif [ -z "$argo" ]
 then
@@ -430,9 +468,11 @@ then
 cat>/etc/local.d/cloudflared.start<<EOF
 . /opt/argo/cloudflared.env
 /opt/argo/cloudflared-linux --edge-ip-version $ips --protocol http2 tunnel --no-autoupdate run --token "\$TUNNEL_TOKEN" &
+echo \$! >/opt/argo/cloudflared.pid
 EOF
 cat>/etc/local.d/xray.start<<EOF
 /opt/argo/xray run -config /opt/argo/config.json &
+echo \$! >/opt/argo/xray.pid
 EOF
 chmod +x /etc/local.d/cloudflared.start /etc/local.d/xray.start
 rc-update add local
@@ -482,6 +522,32 @@ then
 #
 cat>/opt/argo/argo.sh<<EOF
 #!/bin/bash
+stop_pid_file(){
+	pid_file="\$1"
+	match_text="\$2"
+	if [ ! -f "\$pid_file" ]
+	then
+		return 0
+	fi
+	pid=\$(cat "\$pid_file" 2>/dev/null)
+	rm -f "\$pid_file"
+	if ! printf '%s\n' "\$pid" | grep -Eq '^[0-9]+\$'
+	then
+		return 0
+	fi
+	if ps -p "\$pid" -o args= 2>/dev/null | grep -Fq "\$match_text"
+	then
+		kill "\$pid" >/dev/null 2>&1 || true
+		sleep 1
+		kill -9 "\$pid" >/dev/null 2>&1 || true
+	fi
+}
+
+stop_services(){
+	stop_pid_file /opt/argo/xray.pid "/opt/argo/xray"
+	stop_pid_file /opt/argo/cloudflared.pid "/opt/argo/cloudflared-linux"
+}
+
 while true
 do
 if [ "\$(ps -ef | grep cloudflared-linux | grep -v grep | wc -l)" = "0" ]
@@ -519,22 +585,19 @@ then
 	continue
 elif [ "\$menu" = "2" ]
 then
-	kill -9 \$(ps -ef | grep xray | grep -v grep | awk '{print \$1}') >/dev/null 2>&1
-	kill -9 \$(ps -ef | grep cloudflared-linux | grep -v grep | awk '{print \$1}') >/dev/null 2>&1
+	stop_services
 	/etc/local.d/cloudflared.start >/dev/null 2>&1
 	/etc/local.d/xray.start >/dev/null 2>&1
 	clear
 	sleep 1
 elif [ "\$menu" = "3" ]
 then
-	kill -9 \$(ps -ef | grep xray | grep -v grep | awk '{print \$1}') >/dev/null 2>&1
-	kill -9 \$(ps -ef | grep cloudflared-linux | grep -v grep | awk '{print \$1}') >/dev/null 2>&1
+	stop_services
 	clear
 	sleep 2
 elif [ "\$menu" = "4" ]
 then
-	kill -9 \$(ps -ef | grep xray | grep -v grep | awk '{print \$1}') >/dev/null 2>&1
-	kill -9 \$(ps -ef | grep cloudflared-linux | grep -v grep | awk '{print \$1}') >/dev/null 2>&1
+	stop_services
 	/etc/local.d/cloudflared.start >/dev/null 2>&1
 	/etc/local.d/xray.start >/dev/null 2>&1
 	clear
@@ -543,8 +606,7 @@ elif [ "\$menu" = "5" ]
 then
 	echo "Uninstalling local Argo services..."
 	echo "Stopping processes..."
-	kill -9 \$(ps -ef | grep xray | grep -v grep | awk '{print \$1}') >/dev/null 2>&1
-	kill -9 \$(ps -ef | grep cloudflared-linux | grep -v grep | awk '{print \$1}') >/dev/null 2>&1
+	stop_services
 	echo "Removing files..."
 	rm -rf /opt/argo /opt/suoha /etc/local.d/cloudflared.start /etc/local.d/xray.start /usr/bin/argo /usr/bin/suoha
 	echo "All local services and shortcut commands have been removed"
@@ -613,9 +675,9 @@ then
 	echo "Disabling systemd services..."
 	systemctl disable cloudflared.service >/dev/null 2>&1
 	systemctl disable xray.service >/dev/null 2>&1
-	echo "Stopping remaining processes..."
-	kill -9 \$(ps -ef | grep xray | grep -v grep | awk '{print \$2}') >/dev/null 2>&1
-	kill -9 \$(ps -ef | grep cloudflared-linux | grep -v grep | awk '{print \$2}') >/dev/null 2>&1
+	echo "Stopping remaining service processes..."
+	systemctl kill cloudflared.service >/dev/null 2>&1 || true
+	systemctl kill xray.service >/dev/null 2>&1 || true
 	echo "Removing files..."
 	rm -rf /opt/argo /opt/suoha /usr/bin/argo /usr/bin/suoha /lib/systemd/system/cloudflared.service /lib/systemd/system/xray.service /etc/systemd/system/cloudflared.service /etc/systemd/system/xray.service /etc/systemd/system/multi-user.target.wants/cloudflared.service /etc/systemd/system/multi-user.target.wants/xray.service
 	echo "Reloading systemd..."
@@ -697,15 +759,8 @@ then
 	then
 		isp=manual-ipv$ips
 	fi
-	if [ "$os_name" = "Alpine" ]
-	then
-		kill -9 $(ps -ef | grep xray | grep -v grep | awk '{print $1}') >/dev/null 2>&1
-		kill -9 $(ps -ef | grep cloudflared-linux | grep -v grep | awk '{print $1}') >/dev/null 2>&1
-	else
-		kill -9 $(ps -ef | grep xray | grep -v grep | awk '{print $2}') >/dev/null 2>&1
-		kill -9 $(ps -ef | grep cloudflared-linux | grep -v grep | awk '{print $2}') >/dev/null 2>&1
-	fi
-	rm -rf xray cloudflared-linux v2ray.txt
+	stop_quick_processes
+	rm -rf xray cloudflared-linux v2ray.txt .argo_quick_xray.pid .argo_quick_cloudflared.pid
 	quicktunnel
 elif [ "$mode" = "2" ]
 then
@@ -764,21 +819,16 @@ then
 	then
 		echo "Cleaning previous local Argo services..."
 		echo "Stopping processes..."
-		kill -9 $(ps -ef | grep xray | grep -v grep | awk '{print $1}') >/dev/null 2>&1
-		kill -9 $(ps -ef | grep cloudflared-linux | grep -v grep | awk '{print $1}') >/dev/null 2>&1
+		stop_managed_services
 		echo "Removing old files..."
 		rm -rf /opt/argo /opt/suoha /usr/bin/argo /usr/bin/suoha /etc/local.d/cloudflared.start /etc/local.d/xray.start /lib/systemd/system/cloudflared.service /lib/systemd/system/xray.service /etc/systemd/system/cloudflared.service /etc/systemd/system/xray.service /etc/systemd/system/multi-user.target.wants/cloudflared.service /etc/systemd/system/multi-user.target.wants/xray.service
 	else
 		echo "Cleaning previous local Argo services..."
 		echo "Stopping systemd services..."
-		timeout 10s systemctl stop cloudflared.service >/dev/null 2>&1 || true
-		timeout 10s systemctl stop xray.service >/dev/null 2>&1 || true
+		stop_managed_services
 		echo "Disabling systemd services..."
 		systemctl disable cloudflared.service >/dev/null 2>&1
 		systemctl disable xray.service >/dev/null 2>&1
-		echo "Stopping remaining processes..."
-		kill -9 $(ps -ef | grep xray | grep -v grep | awk '{print $2}') >/dev/null 2>&1
-		kill -9 $(ps -ef | grep cloudflared-linux | grep -v grep | awk '{print $2}') >/dev/null 2>&1
 		echo "Removing old files..."
 		rm -rf /opt/argo /opt/suoha /usr/bin/argo /usr/bin/suoha /lib/systemd/system/cloudflared.service /lib/systemd/system/xray.service /etc/systemd/system/cloudflared.service /etc/systemd/system/xray.service /etc/systemd/system/multi-user.target.wants/cloudflared.service /etc/systemd/system/multi-user.target.wants/xray.service
 		echo "Reloading systemd..."
@@ -794,21 +844,16 @@ then
 	then
 		echo "Uninstalling local Argo services..."
 		echo "Stopping processes..."
-		kill -9 $(ps -ef | grep xray | grep -v grep | awk '{print $1}') >/dev/null 2>&1
-		kill -9 $(ps -ef | grep cloudflared-linux | grep -v grep | awk '{print $1}') >/dev/null 2>&1
+		stop_managed_services
 		echo "Removing files..."
 		rm -rf /opt/argo /opt/suoha /usr/bin/argo /usr/bin/suoha /etc/local.d/cloudflared.start /etc/local.d/xray.start /lib/systemd/system/cloudflared.service /lib/systemd/system/xray.service /etc/systemd/system/cloudflared.service /etc/systemd/system/xray.service /etc/systemd/system/multi-user.target.wants/cloudflared.service /etc/systemd/system/multi-user.target.wants/xray.service
 	else
 		echo "Uninstalling local Argo services..."
 		echo "Stopping systemd services..."
-		timeout 10s systemctl stop cloudflared.service >/dev/null 2>&1 || true
-		timeout 10s systemctl stop xray.service >/dev/null 2>&1 || true
+		stop_managed_services
 		echo "Disabling systemd services..."
 		systemctl disable cloudflared.service >/dev/null 2>&1
 		systemctl disable xray.service >/dev/null 2>&1
-		echo "Stopping remaining processes..."
-		kill -9 $(ps -ef | grep xray | grep -v grep | awk '{print $2}') >/dev/null 2>&1
-		kill -9 $(ps -ef | grep cloudflared-linux | grep -v grep | awk '{print $2}') >/dev/null 2>&1
 		echo "Removing files..."
 		rm -rf /opt/argo /opt/suoha /usr/bin/argo /usr/bin/suoha /lib/systemd/system/cloudflared.service /lib/systemd/system/xray.service /etc/systemd/system/cloudflared.service /etc/systemd/system/xray.service /etc/systemd/system/multi-user.target.wants/cloudflared.service /etc/systemd/system/multi-user.target.wants/xray.service
 		echo "Reloading systemd..."
@@ -829,15 +874,8 @@ then
 
 elif [ "$mode" = "4" ]
 then
-	if [ "$os_name" = "Alpine" ]
-	then
-		kill -9 $(ps -ef | grep xray | grep -v grep | awk '{print $1}') >/dev/null 2>&1
-		kill -9 $(ps -ef | grep cloudflared-linux | grep -v grep | awk '{print $1}') >/dev/null 2>&1
-	else
-		kill -9 $(ps -ef | grep xray | grep -v grep | awk '{print $2}') >/dev/null 2>&1
-		kill -9 $(ps -ef | grep cloudflared-linux | grep -v grep | awk '{print $2}') >/dev/null 2>&1
-	fi
-	rm -rf xray cloudflared-linux v2ray.txt
+	stop_quick_processes
+	rm -rf xray cloudflared-linux v2ray.txt .argo_quick_xray.pid .argo_quick_cloudflared.pid
 else
 	echo "Exit successfully"
 	exit
