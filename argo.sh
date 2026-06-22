@@ -133,6 +133,38 @@ base64_oneline(){
 	fi
 }
 
+json_value(){
+	key="$1"
+	sed -n "s/.*\"$key\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p"
+}
+
+json_number(){
+	key="$1"
+	sed -n "s/.*\"$key\"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p"
+}
+
+get_isp_name(){
+	ip_version="$1"
+	meta=$(curl "-$ip_version" -s --connect-timeout 5 --max-time 10 https://speed.cloudflare.com/meta)
+	if [ -z "$meta" ]
+	then
+		printf 'manual-ipv%s\n' "$ip_version"
+		return
+	fi
+
+	colo=$(printf '%s\n' "$meta" | json_value colo | head -n 1)
+	country=$(printf '%s\n' "$meta" | json_value country | head -n 1)
+	asn=$(printf '%s\n' "$meta" | json_number asn | head -n 1)
+	org=$(printf '%s\n' "$meta" | json_value asOrganization | head -n 1)
+
+	name=$(printf '%s-%s-%s-%s\n' "$colo" "$country" "$asn" "$org" | sed -e 's/--*/-/g' -e 's/^-//' -e 's/-$//' -e 's/[^A-Za-z0-9._-]/_/g' -e 's/__*/_/g')
+	if [ -z "$name" ]
+	then
+		name="manual-ipv$ip_version"
+	fi
+	printf '%s\n' "$name"
+}
+
 stop_pid_file(){
 	pid_file="$1"
 	match_text="$2"
@@ -294,20 +326,20 @@ done
 clear
 if [ "$protocol" = "1" ]
 then
-	echo -e "VMess links generated. www.visa.com.sg can be replaced with a Cloudflare preferred IP.\n" > v2ray.txt
-	vmess_json=$(printf '{"add":"www.visa.com.sg","aid":"0","host":"%s","id":"%s","net":"ws","path":"%s","port":"443","ps":"%s_tls","tls":"tls","type":"none","v":"2"}' "$argo" "$uuid" "$urlpath" "$ps_text")
+	echo -e "VMess links generated. saas.sin.fan can be replaced with a Cloudflare preferred IP.\n" > v2ray.txt
+	vmess_json=$(printf '{"add":"saas.sin.fan","aid":"0","host":"%s","id":"%s","net":"ws","path":"%s","port":"443","ps":"%s_tls","tls":"tls","type":"none","v":"2"}' "$argo" "$uuid" "$urlpath" "$ps_text")
 	printf 'vmess://%s\n' "$(printf '%s' "$vmess_json" | base64_oneline)" >> v2ray.txt
 	echo -e "\nPort 443 can be changed to 2053 2083 2087 2096 8443\n" >> v2ray.txt
-	vmess_json=$(printf '{"add":"www.visa.com.sg","aid":"0","host":"%s","id":"%s","net":"ws","path":"%s","port":"80","ps":"%s","tls":"","type":"none","v":"2"}' "$argo" "$uuid" "$urlpath" "$ps_text")
+	vmess_json=$(printf '{"add":"saas.sin.fan","aid":"0","host":"%s","id":"%s","net":"ws","path":"%s","port":"80","ps":"%s","tls":"","type":"none","v":"2"}' "$argo" "$uuid" "$urlpath" "$ps_text")
 	printf 'vmess://%s\n' "$(printf '%s' "$vmess_json" | base64_oneline)" >> v2ray.txt
 	echo -e "\nPort 80 can be changed to 8080 8880 2052 2082 2086 2095" >> v2ray.txt
 fi
 if [ "$protocol" = "2" ]
 then
-	echo -e "VLESS links generated. www.visa.com.sg can be replaced with a Cloudflare preferred IP.\n" > v2ray.txt
-	printf 'vless://%s@www.visa.com.sg:443?encryption=none&security=tls&type=ws&host=%s&path=%s#%s_tls\n' "$uuid" "$argo" "$urlpath" "$ps_uri" >> v2ray.txt
+	echo -e "VLESS links generated. saas.sin.fan can be replaced with a Cloudflare preferred IP.\n" > v2ray.txt
+	printf 'vless://%s@saas.sin.fan:443?encryption=none&security=tls&type=ws&host=%s&path=%s#%s_tls\n' "$uuid" "$argo" "$urlpath" "$ps_uri" >> v2ray.txt
 	echo -e "\nPort 443 can be changed to 2053 2083 2087 2096 8443\n" >> v2ray.txt
-	printf 'vless://%s@www.visa.com.sg:80?encryption=none&security=none&type=ws&host=%s&path=%s#%s\n' "$uuid" "$argo" "$urlpath" "$ps_uri" >> v2ray.txt
+	printf 'vless://%s@saas.sin.fan:80?encryption=none&security=none&type=ws&host=%s&path=%s#%s\n' "$uuid" "$argo" "$urlpath" "$ps_uri" >> v2ray.txt
 	echo -e "\nPort 80 can be changed to 8080 8880 2052 2082 2086 2095" >> v2ray.txt
 fi
 rm -rf argo.log
@@ -444,21 +476,21 @@ Token file: /opt/argo/cloudflared.env
 EOF
 if [ "$protocol" = "1" ]
 then
-	echo -e "VMess links generated. www.visa.com.sg can be replaced with a Cloudflare preferred IP.\n" >/opt/argo/v2ray.txt
-	vmess_json=$(printf '{"add":"www.visa.com.sg","aid":"0","host":"%s","id":"%s","net":"ws","path":"%s","port":"443","ps":"%s","tls":"tls","type":"none","v":"2"}' "$domain" "$uuid" "$urlpath" "$ps_text")
+	echo -e "VMess links generated. saas.sin.fan can be replaced with a Cloudflare preferred IP.\n" >/opt/argo/v2ray.txt
+	vmess_json=$(printf '{"add":"saas.sin.fan","aid":"0","host":"%s","id":"%s","net":"ws","path":"%s","port":"443","ps":"%s","tls":"tls","type":"none","v":"2"}' "$domain" "$uuid" "$urlpath" "$ps_text")
 	printf 'vmess://%s\n' "$(printf '%s' "$vmess_json" | base64_oneline)" >>/opt/argo/v2ray.txt
 	echo -e "\nPort 443 can be changed to 2053 2083 2087 2096 8443\n" >>/opt/argo/v2ray.txt
-	vmess_json=$(printf '{"add":"www.visa.com.sg","aid":"0","host":"%s","id":"%s","net":"ws","path":"%s","port":"80","ps":"%s","tls":"","type":"none","v":"2"}' "$domain" "$uuid" "$urlpath" "$ps_text")
+	vmess_json=$(printf '{"add":"saas.sin.fan","aid":"0","host":"%s","id":"%s","net":"ws","path":"%s","port":"80","ps":"%s","tls":"","type":"none","v":"2"}' "$domain" "$uuid" "$urlpath" "$ps_text")
 	printf 'vmess://%s\n' "$(printf '%s' "$vmess_json" | base64_oneline)" >>/opt/argo/v2ray.txt
 	echo -e "\nPort 80 can be changed to 8080 8880 2052 2082 2086 2095\n" >>/opt/argo/v2ray.txt
 	echo "If non-TLS ports do not work, check Cloudflare SSL/TLS settings." >>/opt/argo/v2ray.txt
 fi
 if [ "$protocol" = "2" ]
 then
-	echo -e "VLESS links generated. www.visa.com.sg can be replaced with a Cloudflare preferred IP.\n" >/opt/argo/v2ray.txt
-	printf 'vless://%s@www.visa.com.sg:443?encryption=none&security=tls&type=ws&host=%s&path=%s#%s_tls\n' "$uuid" "$domain" "$urlpath" "$ps_uri" >>/opt/argo/v2ray.txt
+	echo -e "VLESS links generated. saas.sin.fan can be replaced with a Cloudflare preferred IP.\n" >/opt/argo/v2ray.txt
+	printf 'vless://%s@saas.sin.fan:443?encryption=none&security=tls&type=ws&host=%s&path=%s#%s_tls\n' "$uuid" "$domain" "$urlpath" "$ps_uri" >>/opt/argo/v2ray.txt
 	echo -e "\nPort 443 can be changed to 2053 2083 2087 2096 8443\n" >>/opt/argo/v2ray.txt
-	printf 'vless://%s@www.visa.com.sg:80?encryption=none&security=none&type=ws&host=%s&path=%s#%s\n' "$uuid" "$domain" "$urlpath" "$ps_uri" >>/opt/argo/v2ray.txt
+	printf 'vless://%s@saas.sin.fan:80?encryption=none&security=none&type=ws&host=%s&path=%s#%s\n' "$uuid" "$domain" "$urlpath" "$ps_uri" >>/opt/argo/v2ray.txt
 	echo -e "\nPort 80 can be changed to 8080 8880 2052 2082 2086 2095\n" >>/opt/argo/v2ray.txt
 	echo "If non-TLS ports do not work, check Cloudflare SSL/TLS settings." >>/opt/argo/v2ray.txt
 fi
@@ -754,11 +786,7 @@ then
 		echo "Invalid Argo edge IP version"
 		exit
 	fi
-	isp=$(curl "-$ips" -s --connect-timeout 5 --max-time 10 https://speed.cloudflare.com/meta | awk -F\" '{print $26"-"$18"-"$30}' | sed -e 's/ /_/g')
-	if [ -z "$isp" ]
-	then
-		isp=manual-ipv$ips
-	fi
+	isp=$(get_isp_name "$ips")
 	stop_quick_processes
 	rm -rf xray cloudflared-linux v2ray.txt .argo_quick_xray.pid .argo_quick_cloudflared.pid
 	quicktunnel
@@ -810,11 +838,7 @@ then
 		echo "Invalid Argo edge IP version"
 		exit
 	fi
-	isp=$(curl "-$ips" -s --connect-timeout 5 --max-time 10 https://speed.cloudflare.com/meta | awk -F\" '{print $26"-"$18"-"$30}' | sed -e 's/ /_/g')
-	if [ -z "$isp" ]
-	then
-		isp=manual-ipv$ips
-	fi
+	isp=$(get_isp_name "$ips")
 	if [ "$os_name" = "Alpine" ]
 	then
 		echo "Cleaning previous local Argo services..."
