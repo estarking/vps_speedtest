@@ -5,7 +5,7 @@ umask 077
 
 # ==========================================================
 # Debian 11 / 12 Squid HTTP 代理管理脚本
-# 用法：install | status | password | uninstall
+# 命令：install | status | password | uninstall
 # ==========================================================
 
 BASE="/etc/http-proxy"
@@ -15,7 +15,6 @@ PASSWD_FILE="$BASE/passwd"
 STATE_PORT="$BASE/port"
 STATE_USER="$BASE/username"
 BACKUP_CONF="/etc/squid/squid.conf.http-proxy.bak"
-SCRIPT_PATH="/usr/local/sbin/http-proxy.sh"
 
 die() {
     echo "[错误] $*" >&2
@@ -23,7 +22,7 @@ die() {
 }
 
 need_root() {
-    [[ "${EUID}" -eq 0 ]] || die "请使用 root 用户运行"
+    [[ "$EUID" -eq 0 ]] || die "请使用 root 用户运行"
 }
 
 check_debian() {
@@ -32,7 +31,7 @@ check_debian() {
     source /etc/os-release
 
     [[ "${ID:-}" == "debian" ]] ||
-        die "本脚本仅支持 Debian 11 / Debian 12"
+        die "本脚本仅支持 Debian 11 / 12"
 
     case "${VERSION_ID:-}" in
         11) echo "[系统检测] Debian 11 Bullseye" ;;
@@ -42,7 +41,7 @@ check_debian() {
 }
 
 install_dependencies() {
-    echo "[依赖安装] 正在更新软件源并安装 Squid..."
+    echo "[依赖安装] 正在更新软件源..."
 
     if apt-get update &&
        DEBIAN_FRONTEND=noninteractive apt-get install -y \
@@ -55,7 +54,7 @@ install_dependencies() {
         die "依赖安装失败，请检查 APT 软件源和网络"
     fi
 
-    echo "[依赖安装] Debian 11 安全源可能存在 404，尝试切换归档安全源"
+    echo "[依赖安装] Debian 11 软件源可能存在 404，尝试归档安全源"
 
     local backup_dir f
     backup_dir="/root/apt-sources-backup-$(date +%Y%m%d-%H%M%S)"
@@ -67,7 +66,7 @@ install_dependencies() {
     [[ ! -d /etc/apt/sources.list.d ]] ||
         cp -a /etc/apt/sources.list.d "$backup_dir/"
 
-    # 只替换 Debian 安全仓库地址，不改普通主仓库地址
+    # 仅修改 Debian 安全源地址，保留普通主仓库地址
     for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.list \
              /etc/apt/sources.list.d/*.sources; do
         [[ -f "$f" ]] || continue
@@ -78,7 +77,7 @@ install_dependencies() {
             "$f"
     done
 
-    echo "[依赖安装] 原软件源已备份到：$backup_dir"
+    echo "[依赖安装] 原软件源备份：$backup_dir"
 
     apt-get clean
     rm -rf /var/lib/apt/lists/*
@@ -89,7 +88,7 @@ install_dependencies() {
 
     if ! DEBIAN_FRONTEND=noninteractive apt-get install -y \
         squid apache2-utils curl; then
-        die "依赖安装仍然失败，请检查上方 APT 错误信息"
+        die "依赖安装仍然失败，请检查 APT 错误信息"
     fi
 
     echo "[依赖安装] 成功"
@@ -97,9 +96,9 @@ install_dependencies() {
 
 find_auth_helper() {
     local p
+
     for p in \
         /usr/lib/squid/basic_ncsa_auth \
-        /usr/lib/squid/basic_ncsa_auth.default \
         /usr/libexec/squid/basic_ncsa_auth; do
         if [[ -x "$p" ]]; then
             printf '%s\n' "$p"
@@ -117,11 +116,25 @@ find_auth_helper() {
 
 valid_port() {
     [[ "$1" =~ ^[0-9]+$ ]] &&
-        ((  "$1" >= 1024 && "$1" <= 65535  ))
+        (( 10#$1 >= 1024 && 10#$1 <= 65535 ))
 }
 
 valid_username() {
     [[ "$1" =~ ^[a-zA-Z0-9_.-]{1,64}$ ]]
+}
+
+# 统一设置认证目录和密码文件权限
+set_auth_permissions() {
+    getent group proxy >/dev/null ||
+        die "系统不存在 proxy 用户组，无法设置认证文件权限"
+
+    chown root:proxy "$BASE"
+    chmod 750 "$BASE"
+
+    if [[ -f "$PASSWD_FILE" ]]; then
+        chown root:proxy "$PASSWD_FILE"
+        chmod 640 "$PASSWD_FILE"
+    fi
 }
 
 write_squid_config() {
@@ -130,9 +143,10 @@ write_squid_config() {
 
     mkdir -p /etc/squid
 
-    # 首次覆盖前备份已有配置，卸载时可恢复
+    # 首次修改前备份原配置
     if [[ -f "$CONF" && ! -f "$BACKUP_CONF" ]]; then
         cp -a "$CONF" "$BACKUP_CONF"
+        echo "[配置] 已备份原 Squid 配置到 $BACKUP_CONF"
     fi
 
     cat > "$CONF" <<EOF
@@ -162,9 +176,7 @@ EOF
 
     chmod 644 "$CONF"
 
-    if ! squid -k parse; then
-        die "Squid 配置检查失败，请检查 $CONF"
-    fi
+    squid -k parse || die "Squid 配置检查失败，请检查 $CONF"
 }
 
 start_service() {
@@ -175,12 +187,15 @@ start_service() {
 
 save_info() {
     local ip port username password
+
     port="$(cat "$STATE_PORT")"
     username="$(cat "$STATE_USER")"
     password="$1"
 
-    ip="$(curl -4 -fsS --max-time 5 https://api.ipify.org 2>/dev/null || true)"
-    [[ -n "$ip" ]] || ip="请在服务器执行 curl -4 https://api.ipify.org 查询"
+    ip="$(curl -4 -fsS --max-time 5 \
+        https://api.ipify.org 2>/dev/null || true)"
+    [[ -n "$ip" ]] ||
+        ip="请执行 curl -4 https://api.ipify.org 查询公网 IP"
 
     cat > "$INFO" <<EOF
 Squid HTTP 代理连接信息
@@ -190,8 +205,8 @@ Squid HTTP 代理连接信息
 密码：${password}
 
 HTTP 代理地址：http://${ip}:${port}
-curl 示例：
-curl -x http://${username}:${password}@${ip}:${port} https://example.com
+curl 测试：
+curl -x http://${username}:密码@${ip}:${port} https://example.com
 EOF
 
     chmod 600 "$INFO"
@@ -217,9 +232,8 @@ do_install() {
         die "未找到 Squid 的 basic_ncsa_auth 程序"
 
     mkdir -p "$BASE"
-    chmod 700 "$BASE"
+    set_auth_permissions
 
-    echo
     read -r -p "请输入代理端口（默认 3128）：" port
     port="${port:-3128}"
     valid_port "$port" || die "端口必须在 1024-65535 之间"
@@ -234,14 +248,13 @@ do_install() {
     [[ ${#password} -ge 12 ]] || die "密码至少需要 12 位"
     [[ "$password" != *:* ]] || die "密码不能包含冒号"
 
-    # 保存配置
     printf '%s\n' "$port" > "$STATE_PORT"
     printf '%s\n' "$username" > "$STATE_USER"
     chmod 600 "$STATE_PORT" "$STATE_USER"
 
-    # 创建认证数据库
+    # 创建认证数据库，并设置 proxy 组可读权限
     htpasswd -b -c "$PASSWD_FILE" "$username" "$password" >/dev/null
-    chmod 600 "$PASSWD_FILE"
+    set_auth_permissions
 
     write_squid_config "$port" "$helper"
     start_service
@@ -251,11 +264,11 @@ do_install() {
 }
 
 do_status() {
-    if [[ ! -f "$STATE_PORT" ]]; then
-        echo "尚未发现本脚本安装的代理配置"
-    else
+    if [[ -f "$STATE_PORT" ]]; then
         echo "端口：$(cat "$STATE_PORT")"
         echo "用户名：$(cat "$STATE_USER" 2>/dev/null || echo 未知)"
+    else
+        echo "未发现本脚本管理的代理配置"
     fi
 
     echo
@@ -263,13 +276,17 @@ do_status() {
 
     if [[ -f "$STATE_PORT" ]]; then
         echo
-        echo "监听端口检查："
+        echo "监听端口："
         ss -lntp 2>/dev/null |
             awk -v p=":$(cat "$STATE_PORT")" 'index($4,p) {print}'
     fi
 
     echo
-    echo "配置检查："
+    echo "认证文件权限："
+    ls -ld "$BASE" "$PASSWD_FILE" 2>/dev/null || true
+
+    echo
+    echo "Squid 配置检查："
     squid -k parse 2>&1 || true
 }
 
@@ -286,16 +303,21 @@ do_password() {
     [[ "$password" != *:* ]] || die "密码不能包含冒号"
 
     htpasswd -b "$PASSWD_FILE" "$username" "$password" >/dev/null
-    chmod 600 "$PASSWD_FILE"
 
+    # 每次修改密码后都重新设置正确权限
+    set_auth_permissions
+
+    squid -k parse || die "Squid 配置检查失败"
     systemctl restart squid
+
     save_info "$password"
     echo "[完成] 密码已修改"
 }
 
 do_uninstall() {
-    echo "将停止 Squid，并删除本脚本创建的代理账号和配置。"
+    echo "将停止 Squid，并删除本脚本管理的代理配置。"
     read -r -p "确认卸载？输入 YES 继续：" answer
+
     [[ "$answer" == "YES" ]] || {
         echo "已取消"
         return 0
@@ -314,15 +336,12 @@ do_uninstall() {
     rm -rf "$BASE"
     rm -f "$INFO"
 
-    # 如果恢复了原配置，尝试重新启动 Squid
-    if [[ -f "$CONF" ]]; then
-        if squid -k parse >/dev/null 2>&1; then
-            systemctl enable squid >/dev/null 2>&1 || true
-            systemctl restart squid 2>/dev/null || true
-        fi
+    if [[ -f "$CONF" ]] && squid -k parse >/dev/null 2>&1; then
+        systemctl enable squid >/dev/null 2>&1 || true
+        systemctl restart squid 2>/dev/null || true
     fi
 
-    echo "[完成] 已删除代理脚本管理的配置。Squid 软件包仍保留。"
+    echo "[完成] 已删除代理管理配置，Squid 软件包仍保留。"
 }
 
 usage() {
