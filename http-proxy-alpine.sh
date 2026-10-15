@@ -1,122 +1,190 @@
+
 #!/bin/sh
 set -eu
 
-if [ "$(id -u)" != "0" ]; then
-    echo "请使用 root 运行此脚本"
+# Alpine Linux Tinyproxy 一键安装脚本
+# 适用于单实例、轻量级 NAT VPS
+
+CONF="/etc/tinyproxy/tinyproxy.conf"
+LOGDIR="/var/log/tinyproxy"
+
+if [ "$(id -u)" -ne 0 ]; then
+    echo "错误：请使用 root 用户运行。"
     exit 1
 fi
 
 if [ ! -f /etc/alpine-release ]; then
-    echo "此脚本仅适用于 Alpine Linux"
+    echo "错误：本脚本仅支持 Alpine Linux。"
     exit 1
 fi
 
-echo "===== 安装 Tinyproxy ====="
+echo "=================================="
+echo "    Tinyproxy 一键安装配置"
+echo "=================================="
+
+# 安装软件包
+echo "[1/5] 安装 Tinyproxy..."
 apk add tinyproxy tinyproxy-openrc
 
-CONF=/etc/tinyproxy/tinyproxy.conf
-
-if [ ! -f "$CONF" ]; then
-    echo "未找到配置文件：$CONF"
+if ! id tinyproxy >/dev/null 2>&1; then
+    echo "错误：未找到 tinyproxy 用户。"
     exit 1
 fi
 
-printf "代理监听端口 [20027]: "
+# 输入配置
+printf "监听端口 [20027]: "
 read -r PORT
-PORT=${PORT:-20027}
+PORT="${PORT:-20027}"
 
 case "$PORT" in
     ''|*[!0-9]*)
-        echo "端口必须是数字"
+        echo "错误：端口必须是数字。"
         exit 1
         ;;
 esac
 
-if [ "$PORT" -lt 1024 ] || [ "$PORT" -gt 65535 ]; then
-    echo "请输入 1024 到 65535 之间的端口"
+if [ "$PORT" -lt 1 ] || [ "$PORT" -gt 65535 ]; then
+    echo "错误：端口范围为 1-65535。"
     exit 1
 fi
 
-printf "代理用户名 [gentle]: "
+printf "用户名 [gentle]: "
 read -r USERNAME
-USERNAME=${USERNAME:-gentle}
+USERNAME="${USERNAME:-gentle}"
 
 case "$USERNAME" in
-    ''|*[!A-Za-z0-9._-]*)
-        echo "用户名只允许字母、数字、点、下划线和连字符"
+    ''|*[!a-zA-Z0-9._-]*)
+        echo "错误：用户名只允许字母、数字、点、下划线和连字符。"
         exit 1
         ;;
 esac
 
 while :; do
-    printf "请输入新的代理密码（不显示输入内容）: "
-    read -r -s PASSWORD
+    printf "请输入密码（至少12位，不显示）: "
+    stty -echo
+    if ! read -r PASSWORD; then
+        stty echo
+        printf "\n"
+        exit 1
+    fi
+    stty echo
     printf "\n"
 
     case "$PASSWORD" in
-        ''|*[!A-Za-z0-9._-]*)
-            echo "密码不能为空，只允许字母、数字、点、下划线和连字符"
+        ''|*[!a-zA-Z0-9._-]*)
+            echo "密码只允许字母、数字、点、下划线和连字符。"
             continue
             ;;
     esac
 
     if [ "${#PASSWORD}" -lt 12 ]; then
-        echo "密码至少需要 12 个字符"
+        echo "密码至少需要12位。"
         continue
     fi
 
+    printf "请再次输入密码确认: "
+    stty -echo
+    if ! read -r PASSWORD2; then
+        stty echo
+        printf "\n"
+        exit 1
+    fi
+    stty echo
+    printf "\n"
+
+    if [ "$PASSWORD" != "$PASSWORD2" ]; then
+        echo "两次密码不一致，请重新输入。"
+        continue
+    fi
     break
 done
 
-# 备份原配置
-cp -p "$CONF" "$CONF.bak.$(date +%Y%m%d%H%M%S)"
+# 备份旧配置
+echo "[2/5] 生成配置..."
+mkdir -p /etc/tinyproxy "$LOGDIR"
 
-# 删除相关的有效旧配置，保留其余默认设置
-sed -i -E \
-    '/^[[:space:]]*(Port|Listen|Timeout|MaxClients|MinSpareServers|MaxSpareServers|StartServers|BasicAuth|Allow|Deny|ConnectPort)[[:space:]]/d' \
-    "$CONF"
+if [ -f "$CONF" ]; then
+    cp -p "$CONF" "${CONF}.bak.$(date +%Y%m%d%H%M%S)"
+    echo "旧配置已备份。"
+fi
 
-# 低并发配置，适合小内存 VPS
-cat >> "$CONF" <<EOF
+cat > "$CONF" <<EOF
+User tinyproxy
+Group tinyproxy
 
-# Custom configuration
 Port $PORT
 Timeout 120
 MaxClients 10
-MinSpareServers 1
-MaxSpareServers 2
-StartServers 1
+
 BasicAuth $USERNAME $PASSWORD
+
 ConnectPort 443
 EOF
 
-unset PASSWORD
+chown root:tinyproxy "$CONF"
+chmod 640 "$CONF"
+chown tinyproxy:tinyproxy "$LOGDIR"
+chmod 750 "$LOGDIR"
 
-chmod 600 "$CONF"
+unset PASSWORD PASSWORD2
 
-echo "===== 启动服务 ====="
-rc-update add tinyproxy default
+# 清理 OpenRC 旧状态
+echo "[3/5] 整理服务状态..."
+rc-service tinyproxy stop >/dev/null 2>&1 || true
 
-if ! rc-service tinyproxy restart; then
-    rc-service tinyproxy start || true
+# 本脚本用于单个 Tinyproxy 实例
+if command -v killall >/dev/null 2>&1; then
+    killall tinyproxy 2>/dev/null || true
 fi
 
-echo "===== 服务状态 ====="
-rc-service tinyproxy status || true
+sleep 1
 
-echo "===== 端口监听检查 ====="
-HEX=$(printf '%04X' "$PORT")
-if grep -i ":$HEX" /proc/net/tcp /proc/net/tcp6; then
-    echo "发现对应端口记录，请确认状态列为 0A（监听）"
-else
-    echo "没有发现监听记录，请检查服务日志"
-    tail -n 30 /var/log/tinyproxy/tinyproxy.log 2>/dev/null || true
+if pgrep -x tinyproxy >/dev/null 2>&1; then
+    echo "错误：仍有 Tinyproxy 进程运行，请检查后重试。"
+    exit 1
+fi
+
+rm -f /run/tinyproxy.pid /var/run/tinyproxy.pid
+rc-service tinyproxy zap >/dev/null 2>&1 || true
+rc-update add tinyproxy default
+
+# 启动服务
+echo "[4/5] 启动 Tinyproxy..."
+if ! rc-service tinyproxy start; then
+    echo "错误：启动失败，日志如下："
+    tail -n 40 "$LOGDIR/tinyproxy.log" 2>/dev/null || true
+    exit 1
+fi
+
+sleep 1
+
+if ! rc-service tinyproxy status; then
+    echo "错误：服务状态异常，日志如下："
+    tail -n 40 "$LOGDIR/tinyproxy.log" 2>/dev/null || true
+    exit 1
+fi
+
+# 检查监听端口
+echo "[5/5] 检查监听..."
+if ! netstat -lnt 2>/dev/null | grep -F ":${PORT} " >/dev/null; then
+    echo "错误：端口 $PORT 未监听。"
+    tail -n 40 "$LOGDIR/tinyproxy.log" 2>/dev/null || true
+    exit 1
 fi
 
 echo
-echo "===== 安装流程结束 ====="
+echo "=================================="
+echo "       安装配置完成"
+echo "=================================="
+echo "代理类型：HTTP"
 echo "内部监听端口：$PORT"
 echo "用户名：$USERNAME"
-echo "最大并发连接数：10"
-echo "配置文件：$CONF"
-echo "请确认服务状态和端口监听正常后再测试公网代理。"
+echo "开机自启：已配置"
+echo "密码：已设置（未显示）"
+echo
+echo "注意：请确认 NAT 公网端口映射到内部端口 $PORT。"
+echo
+echo "查看状态：rc-service tinyproxy status"
+echo "重启服务：rc-service tinyproxy restart"
+echo "停止服务：rc-service tinyproxy stop"
+echo "=================================="
